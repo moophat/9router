@@ -32,6 +32,23 @@ const getErrorMessage = (error) => {
   return "Network connection failed - check URL and network connectivity";
 };
 
+// Get status-specific error message for /models endpoint
+const getModelsErrorMessage = (status) => {
+  if (status === 401 || status === 403) return "API key unauthorized";
+  if (status === 404) return "/models endpoint not found - try chat validation with model ID";
+  if (status >= 500) return "Server error - try again later";
+  return `Unexpected response (${status})`;
+};
+
+// Get status-specific error message for /chat/completions endpoint
+const getChatErrorMessage = (status) => {
+  if (status === 401 || status === 403) return "API key unauthorized";
+  if (status === 400) return "Invalid model or bad request";
+  if (status === 404) return "Chat endpoint not found";
+  if (status >= 500) return "Server error - try again later";
+  return `Chat request failed (${status})`;
+};
+
 // POST /api/provider-nodes/validate - Validate API key against base URL
 export async function POST(request) {
   try {
@@ -66,6 +83,11 @@ export async function POST(request) {
 
       if (res.ok) return NextResponse.json({ valid: true });
 
+      // Auth errors - no point trying chat fallback
+      if (res.status === 401 || res.status === 403) {
+        return NextResponse.json({ valid: false, error: "API key unauthorized" });
+      }
+
       // Fallback: try chat/completions if modelId provided
       if (modelId) {
         const chatRes = await fetchWithTimeout(`${normalizedBase}/chat/completions`, {
@@ -82,14 +104,17 @@ export async function POST(request) {
             max_tokens: 1
           })
         });
+        if (chatRes.ok) {
+          return NextResponse.json({ valid: true, method: "chat" });
+        }
         return NextResponse.json({
-          valid: chatRes.ok,
-          error: chatRes.ok ? null : "API key unauthorized or model unavailable",
+          valid: false,
+          error: getChatErrorMessage(chatRes.status),
           method: "chat"
         });
       }
 
-      return NextResponse.json({ valid: false, error: "/models unavailable - provide model ID for chat validation" });
+      return NextResponse.json({ valid: false, error: getModelsErrorMessage(res.status) });
     }
 
     // OpenAI Compatible Validation (Default)
@@ -99,6 +124,11 @@ export async function POST(request) {
     });
 
     if (res.ok) return NextResponse.json({ valid: true });
+
+    // Auth errors - no point trying chat fallback
+    if (res.status === 401 || res.status === 403) {
+      return NextResponse.json({ valid: false, error: "API key unauthorized" });
+    }
 
     // Fallback: try chat/completions if modelId provided
     if (modelId) {
@@ -114,14 +144,17 @@ export async function POST(request) {
           max_tokens: 1
         })
       });
+      if (chatRes.ok) {
+        return NextResponse.json({ valid: true, method: "chat" });
+      }
       return NextResponse.json({
-        valid: chatRes.ok,
-        error: chatRes.ok ? null : "API key unauthorized or model unavailable",
+        valid: false,
+        error: getChatErrorMessage(chatRes.status),
         method: "chat"
       });
     }
 
-    return NextResponse.json({ valid: false, error: "/models unavailable - provide model ID for chat validation" });
+    return NextResponse.json({ valid: false, error: getModelsErrorMessage(res.status) });
   } catch (error) {
     const errorMessage = getErrorMessage(error);
     console.error("Error validating provider node:", {
