@@ -36,7 +36,7 @@ const getErrorMessage = (error) => {
 export async function POST(request) {
   try {
     const body = await request.json();
-    const { baseUrl, apiKey, type } = body;
+    const { baseUrl, apiKey, type, modelId } = body;
 
     if (!baseUrl || !apiKey) {
       return NextResponse.json({ error: "Base URL and API key required" }, { status: 400 });
@@ -49,25 +49,47 @@ export async function POST(request) {
 
     // Anthropic Compatible Validation
     if (type === "anthropic-compatible") {
-      // Robustly construct URL: remove trailing slash, and remove trailing /messages if user added it
       let normalizedBase = baseUrl.trim().replace(/\/$/, "");
       if (normalizedBase.endsWith("/messages")) {
-        normalizedBase = normalizedBase.slice(0, -9); // remove /messages
+        normalizedBase = normalizedBase.slice(0, -9);
       }
-      
-      // Use /models endpoint for validation as many compatible providers support it (like OpenAI)
+
       const modelsUrl = `${normalizedBase}/models`;
-      
       const res = await fetchWithTimeout(modelsUrl, {
         method: "GET",
-        headers: { 
+        headers: {
           "x-api-key": apiKey,
           "anthropic-version": "2023-06-01",
-          "Authorization": `Bearer ${apiKey}` // Add Bearer token for hybrid proxies
+          "Authorization": `Bearer ${apiKey}`
         }
       });
 
-      return NextResponse.json({ valid: res.ok, error: res.ok ? null : "Invalid API key or unauthorized" });
+      if (res.ok) return NextResponse.json({ valid: true });
+
+      // Fallback: try chat/completions if modelId provided
+      if (modelId) {
+        const chatRes = await fetchWithTimeout(`${normalizedBase}/chat/completions`, {
+          method: "POST",
+          headers: {
+            "Authorization": `Bearer ${apiKey}`,
+            "Content-Type": "application/json",
+            "x-api-key": apiKey,
+            "anthropic-version": "2023-06-01"
+          },
+          body: JSON.stringify({
+            model: modelId,
+            messages: [{ role: "user", content: "ping" }],
+            max_tokens: 1
+          })
+        });
+        return NextResponse.json({
+          valid: chatRes.ok,
+          error: chatRes.ok ? null : "API key unauthorized or model unavailable",
+          method: "chat"
+        });
+      }
+
+      return NextResponse.json({ valid: false, error: "/models unavailable - provide model ID for chat validation" });
     }
 
     // OpenAI Compatible Validation (Default)
@@ -76,7 +98,30 @@ export async function POST(request) {
       headers: { "Authorization": `Bearer ${apiKey}` },
     });
 
-    return NextResponse.json({ valid: res.ok, error: res.ok ? null : "Invalid API key or unauthorized" });
+    if (res.ok) return NextResponse.json({ valid: true });
+
+    // Fallback: try chat/completions if modelId provided
+    if (modelId) {
+      const chatRes = await fetchWithTimeout(`${baseUrl.replace(/\/$/, "")}/chat/completions`, {
+        method: "POST",
+        headers: {
+          "Authorization": `Bearer ${apiKey}`,
+          "Content-Type": "application/json"
+        },
+        body: JSON.stringify({
+          model: modelId,
+          messages: [{ role: "user", content: "ping" }],
+          max_tokens: 1
+        })
+      });
+      return NextResponse.json({
+        valid: chatRes.ok,
+        error: chatRes.ok ? null : "API key unauthorized or model unavailable",
+        method: "chat"
+      });
+    }
+
+    return NextResponse.json({ valid: false, error: "/models unavailable - provide model ID for chat validation" });
   } catch (error) {
     const errorMessage = getErrorMessage(error);
     console.error("Error validating provider node:", {
